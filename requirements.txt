@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+pymysql
+python-dotenv
+python-jose
+passlib
+bcrypt==4.0.1
+numpy
+pandas
+scikit-learn
+joblib
+email-validator
+google-generativeai

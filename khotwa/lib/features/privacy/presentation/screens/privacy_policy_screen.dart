@@ -1,0 +1,62 @@
+import 'package:flutter/material.dart';
+
+import '../../../../core/widgets/glass_card.dart';
+import '../../../../core/widgets/khotwa_scaffold.dart';
+
+class PrivacyPolicyScreen extends StatefulWidget {
+  const PrivacyPolicyScreen({super.key});
+
+  @override
+  State<PrivacyPolicyScreen> createState() => _PrivacyPolicyScreenState();
+}
+
+class _PrivacyPolicyScreenState extends State<PrivacyPolicyScreen> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return KhotwaScaffold(
+      title: '????? ????????',
+      child: Stack(
+        children: [
+          GlassCard(
+            child: ListView(
+              controller: _controller,
+              children: const [
+                Text('?????', style: TextStyle(fontWeight: FontWeight.w700)),
+                SizedBox(height: 8),
+                Text('????? ?? ???? ?????? ??????? ?????????? ??? ?????? ????? ???????.'),
+                SizedBox(height: 12),
+                Text('???????? ???? ??????', style: TextStyle(fontWeight: FontWeight.w700)),
+                SizedBox(height: 8),
+                Text('?????? ??????? ?????? ????????? ?????? ????????? ???????.'),
+                SizedBox(height: 12),
+                Text('????? ?????????', style: TextStyle(fontWeight: FontWeight.w700)),
+                SizedBox(height: 8),
+                Text('????? ?????????? ????? ?????? ????????? ????????? ????????.'),
+                SizedBox(height: 120),
+              ],
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 12,
+            child: Center(
+              child: FloatingActionButton.small(
+                onPressed: () => _controller.animateTo(0, duration: const Duration(milliseconds: 450), curve: Curves.easeOut),
+                child: const Icon(Icons.keyboard_arrow_up),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
