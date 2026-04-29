@@ -1,4 +1,4 @@
-from sqlalchemy import (
+﻿from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
@@ -156,6 +156,7 @@ class SupportMessage(Base):
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     subject = Column(String(255))
     message_body = Column(Text)
+    reply_body = Column(Text)
     status = Column(Enum("pending", "answered", "closed"), default="pending")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -181,3 +182,5 @@ class VerificationCode(Base):
     code = Column(String(10), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
