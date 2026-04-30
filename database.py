@@ -13,6 +13,14 @@ SQLALCHEMY_DATABASE_URL = os.getenv(
 if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("mysql://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("mysql://", "mysql+pymysql://", 1)
 
+# --- التعديل الجديد لضمان دعم العربية (UTF-8) ---
+if SQLALCHEMY_DATABASE_URL:
+    if "?" not in SQLALCHEMY_DATABASE_URL:
+        SQLALCHEMY_DATABASE_URL += "?charset=utf8mb4"
+    elif "charset=" not in SQLALCHEMY_DATABASE_URL:
+        SQLALCHEMY_DATABASE_URL += "&charset=utf8mb4"
+# -----------------------------------------------
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_pre_ping=True,
