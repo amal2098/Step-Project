@@ -686,13 +686,14 @@ class UserSettingsUpdate(BaseModel):
 # ---------- Auth ----------
 @app.post("/api/v1/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
-    existing = db.query(models.User).filter(models.User.email == user.email).first()
+    normalized_email = user.email.strip().lower()
+    existing = db.query(models.User).filter(models.User.email == normalized_email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
 
     new_user = models.User(
         full_name=user.full_name,
-        email=user.email,
+        email=normalized_email,
         password_hash=hash_password(user.password),
         phone_number=user.phone_number,
         role="user",
@@ -715,7 +716,8 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/login")
 def login(credentials: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == credentials.email).first()
+    normalized_email = credentials.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
