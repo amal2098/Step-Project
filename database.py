@@ -2,11 +2,25 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# التعديل هنا: غيرنا DATABASE_URL إلى MYSQL_URL لتطابق Railway
-SQLALCHEMY_DATABASE_URL = os.getenv(
-    "MYSQL_URL", 
-    "mysql+pymysql://root:@localhost:3306/step_app_db"
-)
+def _load_database_url() -> str:
+    configured_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("MYSQL_URL")
+        or os.getenv("RAILWAY_DATABASE_URL")
+        or ""
+    ).strip()
+    if not configured_url:
+        raise RuntimeError(
+            "Railway database URL is missing. Set DATABASE_URL or MYSQL_URL in environment variables."
+        )
+    if "localhost" in configured_url.lower() or "127.0.0.1" in configured_url:
+        raise RuntimeError(
+            "Localhost database URLs are disabled. Configure the Railway database URL in environment variables."
+        )
+    return configured_url
+
+
+SQLALCHEMY_DATABASE_URL = _load_database_url()
 
 # ملاحظة: إذا كان الرابط من ريلواي يبدأ بـ mysql:// 
 # SQLAlchemy أحياناً تحتاج تعديله يدوياً ليصبح mysql+pymysql://
