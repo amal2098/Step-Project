@@ -137,6 +137,82 @@ def _ensure_support_reply_column():
 _ensure_support_reply_column()
 
 
+def build_inspiration_headline(project_name: Optional[str]) -> str:
+    clean_name = (project_name or "").strip()
+    if not clean_name:
+        return "كيف بدأت هذه الفكرة رحلتها نحو النجاح؟"
+    return f"كيف تحولت {clean_name} إلى واحدة من قصص النجاح الملهمة؟"
+
+
+def build_inspiration_subtitle(project_name: Optional[str]) -> str:
+    clean_name = (project_name or "").strip()
+    if not clean_name:
+        return "قصة مشروع ملهم توضح كيف يمكن لفكرة واضحة أن تتحول إلى نجاح مؤثر."
+    return f"قصة مشروع عالمي يوضح كيف تحولت فكرة {clean_name} إلى نموذج نجاح ملهم."
+
+
+def clean_inspiration_headline(value: Optional[str], project_name: Optional[str]) -> str:
+    normalized = (value or "").strip()
+    return normalized or build_inspiration_headline(project_name)
+
+
+def clean_inspiration_subtitle(value: Optional[str], project_name: Optional[str]) -> str:
+    normalized = (value or "").strip()
+    return normalized or build_inspiration_subtitle(project_name)
+
+
+def _ensure_inspiration_headline_subtitle_columns():
+    try:
+        inspector = inspect(engine)
+        columns = {column["name"] for column in inspector.get_columns("inspirationprojects")}
+    except Exception as exc:
+        print(f"Warning: failed to inspect inspiration headline/subtitle schema: {exc}")
+        return
+
+    try:
+        with engine.begin() as conn:
+            if "headline" not in columns:
+                conn.execute(
+                    text("ALTER TABLE inspirationprojects ADD COLUMN headline VARCHAR(255) NULL")
+                )
+            if "subtitle" not in columns:
+                conn.execute(
+                    text("ALTER TABLE inspirationprojects ADD COLUMN subtitle TEXT NULL")
+                )
+
+            rows = conn.execute(
+                text(
+                    "SELECT inspiration_id, project_name, headline, subtitle "
+                    "FROM inspirationprojects"
+                )
+            ).mappings().all()
+
+            for row in rows:
+                conn.execute(
+                    text(
+                        "UPDATE inspirationprojects "
+                        "SET headline = :headline, subtitle = :subtitle "
+                        "WHERE inspiration_id = :inspiration_id"
+                    ),
+                    {
+                        "headline": clean_inspiration_headline(
+                            row.get("headline"),
+                            row.get("project_name"),
+                        ),
+                        "subtitle": clean_inspiration_subtitle(
+                            row.get("subtitle"),
+                            row.get("project_name"),
+                        ),
+                        "inspiration_id": row["inspiration_id"],
+                    },
+                )
+    except Exception as exc:
+        print(f"Warning: failed to add inspiration headline/subtitle columns: {exc}")
+
+
+_ensure_inspiration_headline_subtitle_columns()
+
+
 def _ensure_email_verification_schema():
     try:
         inspector = inspect(engine)
@@ -1341,6 +1417,8 @@ def list_inspirations(user_id: Optional[int] = None, db: Session = Depends(get_d
         {
             "inspiration_id": i.inspiration_id,
             "project_name": i.project_name,
+            "headline": i.headline or build_inspiration_headline(i.project_name),
+            "subtitle": i.subtitle or build_inspiration_subtitle(i.project_name),
             "image_url": i.image_url,
             "success_rate": to_float(i.success_rate),
             "story": i.story,
@@ -1988,6 +2066,8 @@ class AdminPanelProjectWrite(BaseModel):
 
 class AdminPanelInspirationWrite(BaseModel):
     project_name: str
+    headline: Optional[str] = None
+    subtitle: Optional[str] = None
     image_url: Optional[str] = None
     success_rate: Optional[float] = None
     story: Optional[str] = None
@@ -2410,6 +2490,8 @@ def admin_panel_list_inspirations(
         {
             "inspiration_id": row.inspiration_id,
             "project_name": row.project_name,
+            "headline": row.headline or build_inspiration_headline(row.project_name),
+            "subtitle": row.subtitle or build_inspiration_subtitle(row.project_name),
             "image_url": row.image_url,
             "success_rate": float(row.success_rate or 0),
             "capital_required": float(row.capital_required or 0),
@@ -2433,6 +2515,8 @@ def admin_panel_get_inspiration(
     return {
         "inspiration_id": row.inspiration_id,
         "project_name": row.project_name,
+        "headline": row.headline or build_inspiration_headline(row.project_name),
+        "subtitle": row.subtitle or build_inspiration_subtitle(row.project_name),
         "image_url": row.image_url,
         "success_rate": float(row.success_rate or 0),
         "capital_required": float(row.capital_required or 0),
@@ -2450,6 +2534,8 @@ def admin_panel_create_inspiration(
 ):
     row = models.InspirationProject(
         project_name=payload.project_name.strip(),
+        headline=clean_inspiration_headline(payload.headline, payload.project_name),
+        subtitle=clean_inspiration_subtitle(payload.subtitle, payload.project_name),
         image_url=payload.image_url,
         success_rate=payload.success_rate,
         story=payload.story,
@@ -2474,6 +2560,8 @@ def admin_panel_update_inspiration(
     if not row:
         raise HTTPException(status_code=404, detail="Inspiration not found")
     row.project_name = payload.project_name.strip()
+    row.headline = clean_inspiration_headline(payload.headline, payload.project_name)
+    row.subtitle = clean_inspiration_subtitle(payload.subtitle, payload.project_name)
     row.image_url = payload.image_url
     row.success_rate = payload.success_rate
     row.story = payload.story

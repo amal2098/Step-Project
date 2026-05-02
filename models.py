@@ -112,6 +112,8 @@ class InspirationProject(Base):
 
     inspiration_id = Column(Integer, primary_key=True, index=True)
     project_name = Column(String(255), nullable=False)
+    headline = Column(String(255))
+    subtitle = Column(Text)
     image_url = Column(String(255))
     success_rate = Column(Numeric(5, 2))
     story = Column(Text)
