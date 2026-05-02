@@ -190,6 +190,9 @@ ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "30"))
 REFRESH_TOKEN_DAYS = int(os.getenv("REFRESH_TOKEN_DAYS", "7"))
 EMAIL_OTP_EXPIRY_MINUTES = int(os.getenv("EMAIL_OTP_EXPIRY_MINUTES", "10"))
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+DEFAULT_ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "am@example.com").strip().lower()
+DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123").strip()
+DEFAULT_ADMIN_NAME = os.getenv("ADMIN_NAME", "System Admin").strip()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Gemini config
@@ -364,6 +367,57 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
+
+
+def ensure_default_admin_account() -> None:
+    if not DEFAULT_ADMIN_EMAIL or not DEFAULT_ADMIN_PASSWORD:
+        logger.warning("Default admin bootstrap skipped because ADMIN_EMAIL or ADMIN_PASSWORD is empty")
+        return
+
+    db = Session(bind=engine)
+    try:
+        admin_user = db.query(models.User).filter(
+            models.User.email == DEFAULT_ADMIN_EMAIL
+        ).first()
+
+        if admin_user is None:
+            admin_user = models.User(
+                full_name=DEFAULT_ADMIN_NAME,
+                email=DEFAULT_ADMIN_EMAIL,
+                password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+                role="admin",
+                is_verified=True,
+            )
+            db.add(admin_user)
+            db.commit()
+            logger.info("Bootstrapped default admin account for %s", DEFAULT_ADMIN_EMAIL)
+            return
+
+        updated = False
+        if str(admin_user.role) != "admin":
+            admin_user.role = "admin"
+            updated = True
+        if not bool(getattr(admin_user, "is_verified", False)):
+            admin_user.is_verified = True
+            updated = True
+        if not verify_password(DEFAULT_ADMIN_PASSWORD, admin_user.password_hash):
+            admin_user.password_hash = hash_password(DEFAULT_ADMIN_PASSWORD)
+            updated = True
+        if (admin_user.full_name or "").strip() != DEFAULT_ADMIN_NAME:
+            admin_user.full_name = DEFAULT_ADMIN_NAME
+            updated = True
+
+        if updated:
+            db.commit()
+            logger.info("Updated default admin account for %s", DEFAULT_ADMIN_EMAIL)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to ensure default admin account for %s", DEFAULT_ADMIN_EMAIL)
+    finally:
+        db.close()
+
+
+ensure_default_admin_account()
 
 
 def normalize_email(email: str) -> str:
@@ -834,6 +888,18 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if str(user.role) == "admin":
+        access_token = create_token(str(user.user_id), "access", timedelta(minutes=ACCESS_TOKEN_MINUTES))
+        refresh_token = create_token(str(user.user_id), "refresh", timedelta(days=REFRESH_TOKEN_DAYS))
+        logger.info("Admin login succeeded for %s without OTP", normalized_email)
+        return {
+            "status": "success",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": serialize_auth_user(user),
+        }
 
     try:
         code = issue_login_otp(db, normalized_email)
