@@ -420,6 +420,26 @@ def ensure_default_admin_account() -> None:
 ensure_default_admin_account()
 
 
+def ensure_all_users_verified() -> None:
+    db = Session(bind=engine)
+    try:
+        updated_rows = (
+            db.query(models.User)
+            .filter(models.User.is_verified != True)
+            .update({"is_verified": True}, synchronize_session=False)
+        )
+        db.commit()
+        logger.info("Marked %s existing users as verified", updated_rows)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to mark existing users as verified")
+    finally:
+        db.close()
+
+
+ensure_all_users_verified()
+
+
 def normalize_email(email: str) -> str:
     return (email or "").strip().lower()
 
@@ -876,7 +896,7 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
         password_hash=hash_password(user.password),
         phone_number=user.phone_number,
         role="user",
-        is_verified=False,
+        is_verified=True,
     )
     db.add(new_user)
     db.commit()
@@ -886,7 +906,7 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
     return {
         "status": "success",
         "message": "Account created successfully",
-        "verification_required_on_login": True,
+        "verification_required_on_login": False,
         "user": serialize_auth_user(new_user),
     }
 
@@ -898,33 +918,20 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
     if not user or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    if str(user.role) == "admin":
-        access_token = create_token(str(user.user_id), "access", timedelta(minutes=ACCESS_TOKEN_MINUTES))
-        refresh_token = create_token(str(user.user_id), "refresh", timedelta(days=REFRESH_TOKEN_DAYS))
-        logger.info("Admin login succeeded for %s without OTP", normalized_email)
-        return {
-            "status": "success",
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "user": serialize_auth_user(user),
-        }
-
-    try:
-        code = issue_login_otp(db, normalized_email)
-        send_login_otp_email(normalized_email, code)
+    if not bool(getattr(user, "is_verified", False)):
+        user.is_verified = True
         db.commit()
-    except EmailServiceError as exc:
-        db.rollback()
-        logger.exception("Failed to send login OTP to %s", normalized_email)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        db.refresh(user)
 
+    access_token = create_token(str(user.user_id), "access", timedelta(minutes=ACCESS_TOKEN_MINUTES))
+    refresh_token = create_token(str(user.user_id), "refresh", timedelta(days=REFRESH_TOKEN_DAYS))
+    logger.info("Login succeeded for %s without OTP", normalized_email)
     return {
         "status": "success",
-        "requires_otp": True,
-        "email": normalized_email,
-        "message": "Verification code sent successfully",
-        "expires_in_minutes": EMAIL_OTP_EXPIRY_MINUTES,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": serialize_auth_user(user),
     }
 
 
