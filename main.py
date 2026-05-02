@@ -424,6 +424,15 @@ def normalize_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
+def normalize_otp_code(code: str) -> str:
+    translation = str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "01234567890123456789",
+    )
+    normalized = (code or "").translate(translation)
+    return re.sub(r"\s+", "", normalized).strip()
+
+
 def serialize_auth_user(user: models.User) -> dict[str, Any]:
     return {
         "user_id": user.user_id,
@@ -1680,7 +1689,7 @@ def _verify_otp(payload: VerifyCodeRequest, db: Session) -> dict[str, Any]:
     ÙˆØ¨Ù…Ø¬Ø±Ø¯ Ø§Ù„ØªØ­Ù‚Ù‚ Ø¨Ù†Ø¬Ø§Ø­ØŒ ÙŠØªÙ… Ù…Ø³Ø­ Ø§Ù„Ø±Ù…Ø² Ù…Ø¨Ø§Ø´Ø±Ø© Ù…Ù† Ø§Ù„Ù€ Database Ù„Ø¶Ù…Ø§Ù† Ø­Ø±Ù‚ Ø§Ù„Ø±Ù…Ø² ÙˆØ¹Ø¯Ù… Ø§Ø³ØªØ®Ø¯Ø§Ù…Ù‡ Ù…Ø±Ø© Ø£Ø®Ø±Ù‰ Ø£Ø¨Ø¯Ø§Ù‹ (One-time only).
     """
     normalized_email = normalize_email(payload.email)
-    normalized_code = (payload.otp or payload.code or "").strip()
+    normalized_code = normalize_otp_code(payload.otp or payload.code or "")
 
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user:
@@ -1694,9 +1703,20 @@ def _verify_otp(payload: VerifyCodeRequest, db: Session) -> dict[str, Any]:
     ).first()
     
     if not record:
+        logger.warning(
+            "OTP mismatch for %s. Submitted=%s",
+            normalized_email,
+            normalized_code,
+        )
         raise HTTPException(status_code=400, detail="Invalid OTP")
         
     if datetime.now() > record.expires_at:
+        logger.warning(
+            "OTP expired for %s. Submitted=%s expires_at=%s",
+            normalized_email,
+            normalized_code,
+            record.expires_at,
+        )
         db.delete(record)
         db.commit()
         raise HTTPException(status_code=400, detail="OTP expired")
