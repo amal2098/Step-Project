@@ -21,6 +21,7 @@ SMTP_PORT = int(_first_env("SMTP_PORT", "EMAIL_PORT", default="587"))
 SMTP_USERNAME = _first_env(
     "SMTP_USERNAME",
     "SMTP_USER",
+    "EMAIL",
     "GMAIL_EMAIL",
     "EMAIL_ADDRESS",
     "EMAIL_HOST_USER",
@@ -28,6 +29,7 @@ SMTP_USERNAME = _first_env(
 )
 SMTP_PASSWORD = _first_env(
     "SMTP_PASSWORD",
+    "APP_PASSWORD",
     "GMAIL_APP_PASSWORD",
     "EMAIL_PASSWORD",
     "EMAIL_HOST_PASSWORD",

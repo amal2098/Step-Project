@@ -24,6 +24,7 @@ class User(Base):
     phone_number = Column(String(20))
     password_hash = Column(String(255), nullable=False)
     role = Column(Enum("user", "admin"), default="user")
+    is_verified = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
