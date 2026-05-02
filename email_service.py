@@ -1,11 +1,15 @@
 import os
 import secrets
+import logging
 import smtplib
 from email.message import EmailMessage
 
 
 class EmailServiceError(Exception):
     pass
+
+
+logger = logging.getLogger("step.email")
 
 
 def _first_env(*names: str, default: str = "") -> str:
@@ -46,10 +50,12 @@ def generate_verification_otp() -> str:
 
 def send_verification_email(recipient_email: str, otp_code: str) -> None:
     if not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM_EMAIL:
+        logger.error("SMTP credentials are missing for verification email")
         raise EmailServiceError(
             "SMTP credentials are missing. Set SMTP_USERNAME, SMTP_PASSWORD, and SMTP_FROM_EMAIL."
         )
     if SMTP_PORT != 587:
+        logger.error("SMTP port %s is invalid for Gmail TLS", SMTP_PORT)
         raise EmailServiceError("Gmail SMTP must use port 587 with TLS.")
 
     message = EmailMessage()
@@ -63,11 +69,14 @@ def send_verification_email(recipient_email: str, otp_code: str) -> None:
     message.set_content(f"Your verification code is: {otp_code}")
 
     try:
+        logger.info("Connecting to SMTP host %s:%s for %s", SMTP_HOST, SMTP_PORT, recipient_email)
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
             smtp.send_message(message)
+        logger.info("Verification email sent to %s", recipient_email)
     except Exception as exc:
+        logger.exception("Failed to send verification email to %s", recipient_email)
         raise EmailServiceError(f"Failed to send verification email: {exc}") from exc

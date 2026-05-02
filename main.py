@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -46,10 +47,19 @@ try:
     import google.generativeai as genai
 except Exception:
     genai = None
+try:
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.oauth2 import id_token as google_id_token
+except Exception:
+    GoogleRequest = None
+    google_id_token = None
 
 import models
 from database import engine, get_db
 from email_service import EmailServiceError, generate_verification_otp, send_verification_email
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("step.auth")
 
 _MOJIBAKE_MARKERS = ("?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?")
 
@@ -179,6 +189,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "30"))
 REFRESH_TOKEN_DAYS = int(os.getenv("REFRESH_TOKEN_DAYS", "7"))
 EMAIL_OTP_EXPIRY_MINUTES = int(os.getenv("EMAIL_OTP_EXPIRY_MINUTES", "10"))
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Gemini config
@@ -386,6 +397,55 @@ def issue_email_verification_code(db: Session, email: str) -> str:
         )
     )
     return code
+
+
+def issue_login_otp(db: Session, email: str) -> str:
+    normalized_email = normalize_email(email)
+    code = issue_email_verification_code(db, normalized_email)
+    logger.info("Generated OTP for %s", normalized_email)
+    return code
+
+
+def send_login_otp_email(email: str, code: str) -> None:
+    logger.info("Sending OTP email to %s", email)
+    send_verification_email(email, code)
+    logger.info("OTP email sent to %s", email)
+
+
+def verify_google_identity(payload: "SocialLoginRequest") -> tuple[str, str]:
+    provider = (payload.provider or "").strip().lower()
+    if provider != "google":
+        raise HTTPException(status_code=400, detail="Only Google login is enabled")
+    if not payload.id_token.strip():
+        raise HTTPException(status_code=400, detail="id_token is required")
+
+    normalized_email = normalize_email(payload.email or "")
+    full_name = (payload.full_name or "").strip() or "Google User"
+
+    if google_id_token is not None and GoogleRequest is not None:
+        try:
+            token_info = google_id_token.verify_oauth2_token(
+                payload.id_token,
+                GoogleRequest(),
+                GOOGLE_CLIENT_ID or None,
+            )
+            normalized_email = normalize_email(
+                str(token_info.get("email") or normalized_email)
+            )
+            token_name = str(token_info.get("name") or "").strip()
+            if token_name:
+                full_name = token_name
+        except Exception as exc:
+            logger.warning("Google token verification failed: %s", exc)
+            if not normalized_email:
+                raise HTTPException(status_code=401, detail="Google sign-in failed") from exc
+    elif not normalized_email:
+        raise HTTPException(status_code=400, detail="Google email is required")
+
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="Google email is required")
+
+    return normalized_email, full_name
 
 
 def to_float(value: Any) -> Optional[float]:
@@ -744,42 +804,26 @@ class UserSettingsUpdate(BaseModel):
 def register(user: UserRegister, db: Session = Depends(get_db)):
     normalized_email = normalize_email(user.email)
     existing = db.query(models.User).filter(models.User.email == normalized_email).first()
-    if existing and bool(getattr(existing, "is_verified", False)):
+    if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
 
-    if existing:
-        existing.full_name = user.full_name
-        existing.password_hash = hash_password(user.password)
-        existing.phone_number = user.phone_number
-        existing.role = "user"
-        existing.is_verified = False
-        new_user = existing
-    else:
-        new_user = models.User(
-            full_name=user.full_name,
-            email=normalized_email,
-            password_hash=hash_password(user.password),
-            phone_number=user.phone_number,
-            role="user",
-            is_verified=False,
-        )
-        db.add(new_user)
-
-    try:
-        code = issue_email_verification_code(db, normalized_email)
-        send_verification_email(normalized_email, code)
-        db.commit()
-    except EmailServiceError as exc:
-        db.rollback()
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    new_user = models.User(
+        full_name=user.full_name.strip(),
+        email=normalized_email,
+        password_hash=hash_password(user.password),
+        phone_number=user.phone_number,
+        role="user",
+        is_verified=False,
+    )
+    db.add(new_user)
+    db.commit()
 
     db.refresh(new_user)
 
     return {
         "status": "success",
-        "message": "Account created. Verification code sent to email.",
-        "verification_required": True,
-        "expires_in_minutes": EMAIL_OTP_EXPIRY_MINUTES,
+        "message": "Account created successfully",
+        "verification_required_on_login": True,
         "user": serialize_auth_user(new_user),
     }
 
@@ -790,21 +834,22 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not bool(getattr(user, "is_verified", False)):
-        raise HTTPException(
-            status_code=403,
-            detail="Email verification required",
-        )
 
-    access_token = create_token(str(user.user_id), "access", timedelta(minutes=ACCESS_TOKEN_MINUTES))
-    refresh_token = create_token(str(user.user_id), "refresh", timedelta(days=REFRESH_TOKEN_DAYS))
+    try:
+        code = issue_login_otp(db, normalized_email)
+        send_login_otp_email(normalized_email, code)
+        db.commit()
+    except EmailServiceError as exc:
+        db.rollback()
+        logger.exception("Failed to send login OTP to %s", normalized_email)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {
         "status": "success",
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user": serialize_auth_user(user),
+        "requires_otp": True,
+        "email": normalized_email,
+        "message": "Verification code sent successfully",
+        "expires_in_minutes": EMAIL_OTP_EXPIRY_MINUTES,
     }
 
 
@@ -1519,7 +1564,8 @@ class VerificationCodeRequest(BaseModel):
 
 class VerifyCodeRequest(BaseModel):
     email: EmailStr
-    code: str
+    otp: Optional[str] = None
+    code: Optional[str] = None
 
 
 class SocialLoginRequest(BaseModel):
@@ -1541,26 +1587,26 @@ def send_verification_code(payload: VerificationCodeRequest, db: Session = Depen
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
-    if bool(getattr(user, "is_verified", False)):
-        return {"status": "success", "message": "Email already verified"}
 
     try:
-        code = issue_email_verification_code(db, normalized_email)
-        send_verification_email(normalized_email, code)
+        code = issue_login_otp(db, normalized_email)
+        send_login_otp_email(normalized_email, code)
         db.commit()
     except EmailServiceError as exc:
         db.rollback()
+        logger.exception("Failed to resend OTP to %s", normalized_email)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {
         "status": "success",
         "message": "Verification code sent successfully",
+        "requires_otp": True,
+        "email": normalized_email,
         "expires_in_minutes": EMAIL_OTP_EXPIRY_MINUTES,
     }
 
 
-@app.post("/api/v1/auth/verify-code")
-def verify_code(payload: VerifyCodeRequest, db: Session = Depends(get_db)):
+def _verify_otp(payload: VerifyCodeRequest, db: Session) -> dict[str, Any]:
     """
     Ø§Ù„ØªØ­Ù‚Ù‚ Ù…Ù† Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ (OTP) Ø§Ù„Ù…Ù‚Ø¯Ù… Ù…Ù† Ø§Ù„ØªØ·Ø¨ÙŠÙ‚.
     ÙŠÙØ­Øµ Ø§Ù„Ø¨Ø§Ùƒ Ø§Ù†Ø¯ Ù…Ø¯Ù‰ ØªØ·Ø§Ø¨Ù‚ Ø§Ù„Ø±Ù…Ø² Ù„Ù„Ù…Ø³ØªØ®Ø¯Ù… ÙˆÙŠÙ‚Ø§Ø±Ù† ØªØ§Ø±ÙŠØ® Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„ØµÙ„Ø§Ø­ÙŠØ© Ø§Ù„Ù…Ø­ÙÙˆØ¸ 
@@ -1568,13 +1614,13 @@ def verify_code(payload: VerifyCodeRequest, db: Session = Depends(get_db)):
     ÙˆØ¨Ù…Ø¬Ø±Ø¯ Ø§Ù„ØªØ­Ù‚Ù‚ Ø¨Ù†Ø¬Ø§Ø­ØŒ ÙŠØªÙ… Ù…Ø³Ø­ Ø§Ù„Ø±Ù…Ø² Ù…Ø¨Ø§Ø´Ø±Ø© Ù…Ù† Ø§Ù„Ù€ Database Ù„Ø¶Ù…Ø§Ù† Ø­Ø±Ù‚ Ø§Ù„Ø±Ù…Ø² ÙˆØ¹Ø¯Ù… Ø§Ø³ØªØ®Ø¯Ø§Ù…Ù‡ Ù…Ø±Ø© Ø£Ø®Ø±Ù‰ Ø£Ø¨Ø¯Ø§Ù‹ (One-time only).
     """
     normalized_email = normalize_email(payload.email)
-    normalized_code = payload.code.strip()
+    normalized_code = (payload.otp or payload.code or "").strip()
 
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
-    if bool(getattr(user, "is_verified", False)):
-        return {"status": "success", "verified": True, "user": serialize_auth_user(user)}
+    if not normalized_code:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
 
     record = db.query(models.VerificationCode).filter(
         models.VerificationCode.email == normalized_email,
@@ -1582,33 +1628,53 @@ def verify_code(payload: VerifyCodeRequest, db: Session = Depends(get_db)):
     ).first()
     
     if not record:
-        raise HTTPException(status_code=400, detail="Invalid verification code or email")
+        raise HTTPException(status_code=400, detail="Invalid OTP")
         
     if datetime.now() > record.expires_at:
         db.delete(record)
         db.commit()
-        raise HTTPException(status_code=400, detail="Verification code expired")
+        raise HTTPException(status_code=400, detail="OTP expired")
         
     user.is_verified = True
-    db.delete(record)
+    db.query(models.VerificationCode).filter(
+        models.VerificationCode.email == normalized_email
+    ).delete()
     db.commit()
     db.refresh(user)
-    return {"status": "success", "verified": True, "user": serialize_auth_user(user)}
+
+    access_token = create_token(str(user.user_id), "access", timedelta(minutes=ACCESS_TOKEN_MINUTES))
+    refresh_token = create_token(str(user.user_id), "refresh", timedelta(days=REFRESH_TOKEN_DAYS))
+
+    return {
+        "status": "success",
+        "verified": True,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": serialize_auth_user(user),
+    }
+
+
+@app.post("/api/v1/auth/verify-code")
+def verify_code(payload: VerifyCodeRequest, db: Session = Depends(get_db)):
+    return _verify_otp(payload, db)
+
+
+@app.post("/api/v1/auth/verify-otp")
+def verify_otp(payload: VerifyCodeRequest, db: Session = Depends(get_db)):
+    return _verify_otp(payload, db)
 
 
 @app.post("/api/v1/auth/social-login")
 def social_login(payload: SocialLoginRequest, db: Session = Depends(get_db)):
-    if not payload.id_token:
-        raise HTTPException(status_code=400, detail="id_token is required")
-
-    normalized_email = (payload.email or f"{payload.provider}_user@khotwa.local").lower()
+    normalized_email, full_name = verify_google_identity(payload)
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
 
     if user is None:
         user = models.User(
-            full_name=payload.full_name or f"{payload.provider.title()} User",
+            full_name=full_name,
             email=normalized_email,
-            password_hash=hash_password(f"social-{payload.provider}-{payload.id_token[:8]}"),
+            password_hash=hash_password(f"social-google-{payload.id_token[:8]}"),
             role="user",
             is_verified=True,
         )
@@ -1616,6 +1682,7 @@ def social_login(payload: SocialLoginRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
     else:
+        user.full_name = full_name or user.full_name
         user.is_verified = True
         db.commit()
         db.refresh(user)
@@ -1634,7 +1701,7 @@ def social_login(payload: SocialLoginRequest, db: Session = Depends(get_db)):
 # ---------- Admin & Dashboard Endpoints ----------
 
 from fastapi.security import OAuth2PasswordBearer
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/verify-otp")
 
 def get_current_user_id(token: str = Depends(oauth2_scheme)) -> int:
     payload = decode_token(token, "access")
